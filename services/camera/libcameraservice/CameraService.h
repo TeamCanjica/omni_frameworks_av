@@ -109,6 +109,7 @@ public:
     enum sound_kind {
         SOUND_SHUTTER = 0,
         SOUND_RECORDING = 1,
+        SOUND_RECORDING_STOP = 2,
         NUM_SOUNDS
     };
 
@@ -172,6 +173,9 @@ public:
         pid_t                           mClientPid;
         uid_t                           mClientUid;      // immutable after constructor
         pid_t                           mServicePid;     // immutable after constructor
+#ifdef QCOM_HARDWARE
+        int                             mBurstCnt;
+#endif
 
         // - The app-side Binder interface to receive callbacks from us
         sp<IBinder>                     mRemoteBinder;   // immutable after constructor

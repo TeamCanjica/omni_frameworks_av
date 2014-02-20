@@ -424,7 +424,7 @@ status_t AudioPolicyService::setStreamVolumeIndex(audio_stream_type_t stream,
                                                                 stream,
                                                                 index,
                                                                 device);
-    } else 
+    } else
 #endif
     {
         return mpAudioPolicy->set_stream_volume_index(mpAudioPolicy, stream, index);
@@ -448,7 +448,7 @@ status_t AudioPolicyService::getStreamVolumeIndex(audio_stream_type_t stream,
                                                                 stream,
                                                                 index,
                                                                 device);
-    } else 
+    } else
 #endif
     {
         return mpAudioPolicy->get_stream_volume_index(mpAudioPolicy, stream, index);
@@ -1026,7 +1026,9 @@ void AudioPolicyService::AudioCommandThread::insertCommand_l(AudioCommand *comma
             } else {
                 data2->mKeyValuePairs = param2.toString();
             }
-            command->mTime = command2->mTime;
+            if (!strcmp(data2->mKeyValuePairs.string(), data->mKeyValuePairs.string())){
+                command->mTime = command2->mTime;
+            }
             // force delayMs to non 0 so that code below does not request to wait for
             // command status as the command is now delayed
             delayMs = 1;

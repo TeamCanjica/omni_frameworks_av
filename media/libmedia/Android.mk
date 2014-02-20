@@ -11,6 +11,17 @@ include $(BUILD_STATIC_LIBRARY)
 
 include $(CLEAR_VARS)
 
+ifeq ($(BOARD_USES_QCOM_HARDWARE),true)
+LOCAL_SRC_FILES:= AudioParameter.cpp
+LOCAL_MODULE:= libaudioparameter
+LOCAL_MODULE_TAGS := optional
+LOCAL_SHARED_LIBRARIES := libutils libcutils
+
+include $(BUILD_SHARED_LIBRARY)
+endif
+
+include $(CLEAR_VARS)
+
 LOCAL_SRC_FILES:= \
     AudioTrack.cpp \
     AudioTrackShared.cpp \
@@ -56,7 +67,15 @@ LOCAL_SRC_FILES:= \
     SoundPoolThread.cpp \
     StringArray.cpp
 
+ifeq ($(BOARD_USES_QCOM_HARDWARE),true)
+LOCAL_SRC_FILES += IDirectTrack.cpp IDirectTrackClient.cpp 
+endif
+
 LOCAL_SRC_FILES += ../libnbaio/roundup.c
+
+ifeq ($(BOARD_NEED_OMX_COMPAT),true)
+    LOCAL_CFLAGS += -DUSE_OMX_COMPAT
+endif
 
 # for <cutils/atomic-inline.h>
 LOCAL_CFLAGS += -DANDROID_SMP=$(if $(findstring true,$(TARGET_CPU_SMP)),1,0)
