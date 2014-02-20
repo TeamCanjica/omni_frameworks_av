@@ -603,6 +603,11 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
             def.format.video.nFrameWidth,
             def.format.video.nFrameHeight,
             def.format.video.eColorFormat);
+#ifdef STE_HARDWARE
+            OMXCodec::OmxToHALFormat(def.format.video.eColorFormat));
+#else
+            def.format.video.eColorFormat);
+#endif
 #endif
 
     if (err != 0) {
