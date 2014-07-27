@@ -64,6 +64,13 @@
 #include <sec_format.h>
 #endif
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+#include <binder/IMemory.h>
+#include <binder/MemoryBase.h>
+#include <binder/MemoryHeapBase.h>
+#define OMX_COMPONENT_CAPABILITY_TYPE_INDEX 0xFF7A347
+#endif
+
 namespace android {
 
 #ifdef USE_SAMSUNG_COLORFORMAT
@@ -328,6 +335,19 @@ void OMXCodec::findMatchingCodecs(
 uint32_t OMXCodec::getComponentQuirks(
         const MediaCodecList *list, size_t index) {
     uint32_t quirks = 0;
+
+    if (list->codecHasQuirk(
+                index, "needs-flush-before-disable")) {
+        quirks |= kNeedsFlushBeforeDisable;
+    }
+    if (list->codecHasQuirk(
+                index, "requires-flush-complete-emulation")) {
+        quirks |= kRequiresFlushCompleteEmulation;
+    }
+    if (list->codecHasQuirk(
+                index, "supports-multiple-frames-per-input-buffer")) {
+        quirks |= kSupportsMultipleFramesPerInputBuffer;
+    }
     if (list->codecHasQuirk(
                 index, "requires-allocate-on-input-ports")) {
         quirks |= kRequiresAllocateBufferOnInputPorts;
@@ -346,7 +366,7 @@ uint32_t OMXCodec::getComponentQuirks(
     }
 #ifdef QCOM_HARDWARE
     if (list->codecHasQuirk(
-                index, "requies-loaded-to-idle-after-allocation")) {
+                index, "requires-loaded-to-idle-after-allocation")) {
         quirks |= kRequiresLoadedToIdleAfterAllocation;
     }
     if (list->codecHasQuirk(
@@ -663,6 +683,14 @@ status_t OMXCodec::configureCodec(const sp<MetaData> &meta) {
 #ifdef ENABLE_AV_ENHANCEMENTS
         } else if (meta->findData(kKeyRawCodecSpecificData, &type, &data, &size)) {
             ALOGV("OMXCodec::configureCodec found kKeyRawCodecSpecificData of size %d\n", size);
+            if (!strncmp(mComponentName, "OMX.qcom.video.decoder.mpeg4",
+                         sizeof("OMX.qcom.video.decoder.mpeg4"))) {
+                bool isDP = ExtendedCodec::checkDPFromCodecSpecificData((const uint8_t*)data, size);
+                if (isDP) {
+                    ALOGE("H/W Decode Error: Data Partitioned bit set in the Header");
+                    return BAD_VALUE;
+                }
+            }
             addCodecSpecificData(data, size);
 #endif
 #ifdef QCOM_HARDWARE
@@ -1966,6 +1994,15 @@ status_t OMXCodec::allocateBuffersOnPort(OMX_U32 portIndex) {
     size_t totalSize = def.nBufferCountActual * def.nBufferSize;
     mDealer[portIndex] = new MemoryDealer(totalSize, "OMXCodec");
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+    OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO pmeminfo;
+
+    if (portIndex == kPortIndexInput && !strncmp(mComponentName,"OMX.qcom.video.encoder.",23 )) {
+        mQuirks |= kXperiaAvoidMemcopyInputRecordingFrames;
+        mQuirks &= ~kRequiresAllocateBufferOnInputPorts;
+    }
+#endif
+
     for (OMX_U32 i = 0; i < def.nBufferCountActual; ++i) {
         sp<IMemory> mem = mDealer[portIndex]->allocate(def.nBufferSize);
         CHECK(mem.get() != NULL);
@@ -2000,6 +2037,18 @@ status_t OMXCodec::allocateBuffersOnPort(OMX_U32 portIndex) {
                 err = mOMX->allocateBufferWithBackup(
                         mNode, portIndex, mem, &buffer);
             }
+#ifdef SEMC_ICS_CAMERA_BLOB
+        } else if (portIndex == kPortIndexInput
+                && (mQuirks & kXperiaAvoidMemcopyInputRecordingFrames)) {
+            sp<MemoryBase>* ptrbuffer;
+            mSource->getRecordingBuffer(i, &ptrbuffer);
+            ssize_t offset;
+            size_t size;
+            sp<IMemoryHeap> heap = (*ptrbuffer)->getMemory(&offset, &size);
+            pmeminfo.pmem_fd = heap->getHeapID();
+            pmeminfo.offset = offset;
+            err = mOMX->useBufferPmem(mNode, portIndex, &pmeminfo,def.nBufferSize, (*ptrbuffer)->pointer(), &buffer);
+#endif
         } else {
             err = mOMX->useBuffer(mNode, portIndex, mem, &buffer);
         }
@@ -3440,6 +3489,12 @@ void OMXCodec::drainInputBuffers() {
                 continue;
             }
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+            if (mIsEncoder && mIsVideo && (i == 4)) {
+                break;
+            }
+#endif
+
             if (!drainInputBuffer(info)) {
                 break;
             }
@@ -3645,6 +3700,14 @@ bool OMXCodec::drainInputBuffer(BufferInfo *info) {
 
                 CHECK(info->mMediaBuffer == NULL);
                 info->mMediaBuffer = srcBuffer;
+#ifdef SEMC_ICS_CAMERA_BLOB
+        } else if (mIsEncoder && (mQuirks & kXperiaAvoidMemcopyInputRecordingFrames)) {
+                CHECK(mOMXLivesLocally && offset == 0);
+                OMX_BUFFERHEADERTYPE *header = (OMX_BUFFERHEADERTYPE *) info->mBuffer;
+                header->pBuffer = (OMX_U8 *) srcBuffer->data() + srcBuffer->range_offset();
+                releaseBuffer = false;
+                info->mMediaBuffer = srcBuffer;
+#endif
         } else {
 #ifdef USE_SAMSUNG_COLORFORMAT
             OMX_PARAM_PORTDEFINITIONTYPE def;
@@ -5223,6 +5286,24 @@ void OMXCodec::initOutputFormat(const sp<MetaData> &inputFormat) {
 #ifdef QCOM_HARDWARE
             } else {
                 ExtendedUtils::HFR::copyHFRParams(inputFormat, mOutputFormat);
+#ifdef SEMC_ICS_CAMERA_BLOB
+                typedef struct OMXComponentCapabilityFlagsType
+                {
+                  OMX_BOOL iIsOMXComponentMultiThreaded;
+                  OMX_BOOL iOMXComponentSupportsExternalOutputBufferAlloc;
+                  OMX_BOOL iOMXComponentSupportsExternalInputBufferAlloc;
+                  OMX_BOOL iOMXComponentSupportsMovableInputBuffers;
+                  OMX_BOOL iOMXComponentSupportsPartialFrames;
+                  OMX_BOOL iOMXComponentUsesNALStartCodes;
+                  OMX_BOOL iOMXComponentCanHandleIncompleteFrames;
+                  OMX_BOOL iOMXComponentUsesFullAVCFrames;
+
+                } OMXComponentCapabilityFlagsType;
+
+                OMXComponentCapabilityFlagsType junk;
+                mOMX->getParameter( mNode, (OMX_INDEXTYPE) OMX_COMPONENT_CAPABILITY_TYPE_INDEX,
+                                    &junk, sizeof(junk) );
+#endif
 #endif
             }
             break;

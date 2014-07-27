@@ -453,7 +453,7 @@ size_t AudioPlayer::AudioSinkCallback(
         MediaPlayerBase::AudioSink::cb_event_t event) {
     AudioPlayer *me = (AudioPlayer *)cookie;
 
-#ifdef QCOM_HARDWARE
+#ifdef QCOM_DIRECTTRACK
     if (buffer == NULL) {
         //Not applicable for AudioPlayer
         ALOGE("This indicates the event underrun case for LPA/Tunnel");
@@ -790,16 +790,27 @@ int64_t AudioPlayer::getRealTimeUsLocked() const {
 #endif
 }
 
-int64_t AudioPlayer::getOutputPlayPositionUs_l() const
+int64_t AudioPlayer::getOutputPlayPositionUs_l()
 {
     uint32_t playedSamples = 0;
+    uint32_t sampleRate;
     if (mAudioSink != NULL) {
         mAudioSink->getPosition(&playedSamples);
+        sampleRate = mAudioSink->getSampleRate();
     } else {
         mAudioTrack->getPosition(&playedSamples);
+        sampleRate = mAudioTrack->getSampleRate();
+    }
+    if (sampleRate != 0) {
+        mSampleRate = sampleRate;
     }
 
-    const int64_t playedUs = (static_cast<int64_t>(playedSamples) * 1000000 ) / mSampleRate;
+    int64_t playedUs;
+    if (mSampleRate != 0) {
+        playedUs = (static_cast<int64_t>(playedSamples) * 1000000 ) / mSampleRate;
+    } else {
+        playedUs = 0;
+    }
 
     // HAL position is relative to the first buffer we sent at mStartPosUs
     const int64_t renderedDuration = mStartPosUs + playedUs;

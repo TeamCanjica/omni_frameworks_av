@@ -54,10 +54,17 @@ struct BufferMeta {
         if (!mIsBackup) {
             return;
         }
-
+#ifdef TF101_OMX
+        size_t bytesToCopy = header->nFlags & OMX_BUFFERFLAG_EXTRADATA ?
+            header->nAllocLen - header->nOffset : header->nFilledLen;
+#endif
         memcpy((OMX_U8 *)mMem->pointer() + header->nOffset,
+#ifdef TF101_OMX
+               header->pBuffer + header->nOffset, bytesToCopy);
+#else
                header->pBuffer + header->nOffset,
                header->nFilledLen);
+#endif
     }
 
     void CopyToOMX(const OMX_BUFFERHEADERTYPE *header) {
@@ -65,9 +72,17 @@ struct BufferMeta {
             return;
         }
 
+#ifdef TF101_OMX
+        size_t bytesToCopy = header->nFlags & OMX_BUFFERFLAG_EXTRADATA ?
+            header->nAllocLen - header->nOffset : header->nFilledLen;
+#endif
         memcpy(header->pBuffer + header->nOffset,
+#ifdef TF101_OMX
+               (const OMX_U8 *)mMem->pointer() + header->nOffset, bytesToCopy);
+#else
                (const OMX_U8 *)mMem->pointer() + header->nOffset,
                header->nFilledLen);
+#endif
     }
 
     void setGraphicBuffer(const sp<GraphicBuffer> &graphicBuffer) {
@@ -494,6 +509,36 @@ status_t OMXNodeInstance::useBuffer(
     return OK;
 }
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+status_t OMXNodeInstance::useBufferPmem(
+        OMX_U32 portIndex, OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO *pmem_info, OMX_U32 size, void *vaddr,
+        OMX::buffer_id *buffer) {
+    Mutex::Autolock autoLock(mLock);
+
+    OMX_BUFFERHEADERTYPE *header;
+
+    OMX_ERRORTYPE err = OMX_UseBuffer(
+            mHandle, &header, portIndex, pmem_info,
+            size, static_cast<OMX_U8 *>(vaddr));
+
+    if (err != OMX_ErrorNone) {
+        ALOGE("OMX_UseBuffer failed with error %d (0x%08x)", err, err);
+
+        *buffer = 0;
+
+        return UNKNOWN_ERROR;
+    }
+
+    header->pAppPrivate = NULL;
+
+    *buffer = header;
+
+    addActiveBuffer(portIndex, *buffer);
+
+    return OK;
+}
+#endif
+
 status_t OMXNodeInstance::useGraphicBuffer2_l(
         OMX_U32 portIndex, const sp<GraphicBuffer>& graphicBuffer,
         OMX::buffer_id *buffer) {
@@ -769,7 +814,14 @@ status_t OMXNodeInstance::freeBuffer(
 #endif
 
     OMX_BUFFERHEADERTYPE *header = (OMX_BUFFERHEADERTYPE *)buffer;
-    BufferMeta *buffer_meta = static_cast<BufferMeta *>(header->pAppPrivate);
+    BufferMeta *buffer_meta;
+#ifdef SEMC_ICS_CAMERA_BLOB
+    if (header->pAppPrivate) {
+#endif
+        buffer_meta = static_cast<BufferMeta *>(header->pAppPrivate);
+#ifdef SEMC_ICS_CAMERA_BLOB
+    }
+#endif
 
     OMX_ERRORTYPE err = OMX_FreeBuffer(mHandle, portIndex, header);
 
@@ -780,8 +832,14 @@ status_t OMXNodeInstance::freeBuffer(
         ALOGI("OMX_FreeBuffer for buffer header %p successful", header);
         removeActiveBuffer(portIndex, buffer);
 
-        delete buffer_meta;
-        buffer_meta = NULL;
+#ifdef SEMC_ICS_CAMERA_BLOB
+        if (header->pAppPrivate) {
+#endif
+            delete buffer_meta;
+            buffer_meta = NULL;
+#ifdef SEMC_ICS_CAMERA_BLOB
+        }
+#endif
     }
 #else
     delete buffer_meta;
@@ -816,9 +874,15 @@ status_t OMXNodeInstance::emptyBuffer(
     header->nFlags = flags;
     header->nTimeStamp = timestamp;
 
-    BufferMeta *buffer_meta =
-        static_cast<BufferMeta *>(header->pAppPrivate);
-    buffer_meta->CopyToOMX(header);
+    BufferMeta *buffer_meta;
+#ifdef SEMC_ICS_CAMERA_BLOB
+    if (header->pAppPrivate) {
+#endif
+        buffer_meta = static_cast<BufferMeta *>(header->pAppPrivate);
+        buffer_meta->CopyToOMX(header);
+#ifdef SEMC_ICS_CAMERA_BLOB
+    }
+#endif
 
     OMX_ERRORTYPE err = OMX_EmptyThisBuffer(mHandle, header);
 
@@ -863,6 +927,7 @@ status_t OMXNodeInstance::setInternalOption(
     switch (type) {
         case IOMX::INTERNAL_OPTION_SUSPEND:
         case IOMX::INTERNAL_OPTION_REPEAT_PREVIOUS_FRAME_DELAY:
+        case IOMX::INTERNAL_OPTION_MAX_TIMESTAMP_GAP:
         {
             const sp<GraphicBufferSource> &bufferSource =
                 getGraphicBufferSource();
@@ -878,7 +943,8 @@ status_t OMXNodeInstance::setInternalOption(
 
                 bool suspend = *(bool *)data;
                 bufferSource->suspend(suspend);
-            } else {
+            } else if (type ==
+                    IOMX::INTERNAL_OPTION_REPEAT_PREVIOUS_FRAME_DELAY){
                 if (size != sizeof(int64_t)) {
                     return INVALID_OPERATION;
                 }
@@ -886,6 +952,14 @@ status_t OMXNodeInstance::setInternalOption(
                 int64_t delayUs = *(int64_t *)data;
 
                 return bufferSource->setRepeatPreviousFrameDelayUs(delayUs);
+            } else {
+                if (size != sizeof(int64_t)) {
+                    return INVALID_OPERATION;
+                }
+
+                int64_t maxGapUs = *(int64_t *)data;
+
+                return bufferSource->setMaxTimestampGapUs(maxGapUs);
             }
 
             return OK;
@@ -897,18 +971,34 @@ status_t OMXNodeInstance::setInternalOption(
 }
 
 void OMXNodeInstance::onMessage(const omx_message &msg) {
+    const sp<GraphicBufferSource>& bufferSource(getGraphicBufferSource());
+
     if (msg.type == omx_message::FILL_BUFFER_DONE) {
         OMX_BUFFERHEADERTYPE *buffer =
             static_cast<OMX_BUFFERHEADERTYPE *>(
                     msg.u.extended_buffer_data.buffer);
 
-        BufferMeta *buffer_meta =
-            static_cast<BufferMeta *>(buffer->pAppPrivate);
 
-        buffer_meta->CopyFromOMX(buffer);
+        BufferMeta *buffer_meta;
+#ifdef SEMC_ICS_CAMERA_BLOB
+        if (buffer->pAppPrivate) {
+#endif
+            buffer_meta = static_cast<BufferMeta *>(buffer->pAppPrivate);
+            buffer_meta->CopyFromOMX(buffer);
+#ifdef SEMC_ICS_CAMERA_BLOB
+        }
+#endif
+
+        if (bufferSource != NULL) {
+            // fix up the buffer info (especially timestamp) if needed
+            bufferSource->codecBufferFilled(buffer);
+
+            omx_message newMsg = msg;
+            newMsg.u.extended_buffer_data.timestamp = buffer->nTimeStamp;
+            mObserver->onMessage(newMsg);
+            return;
+        }
     } else if (msg.type == omx_message::EMPTY_BUFFER_DONE) {
-        const sp<GraphicBufferSource>& bufferSource(getGraphicBufferSource());
-
         if (bufferSource != NULL) {
             // This is one of the buffers used exclusively by
             // GraphicBufferSource.

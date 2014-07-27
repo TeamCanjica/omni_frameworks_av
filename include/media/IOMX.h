@@ -29,6 +29,16 @@
 
 namespace android {
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+typedef struct OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO
+{
+    /** pmem file descriptor */
+    OMX_U32 pmem_fd;
+    /** Offset from pmem device base address */
+    OMX_U32 offset;
+}OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO;
+#endif
+
 class IMemory;
 class IOMXObserver;
 class IOMXRenderer;
@@ -97,6 +107,12 @@ public:
             node_id node, OMX_U32 port_index, const sp<IMemory> &params,
             buffer_id *buffer) = 0;
 
+#ifdef SEMC_ICS_CAMERA_BLOB
+    virtual status_t useBufferPmem(
+            node_id node, OMX_U32 portIndex, OMX_QCOM_PLATFORM_PRIVATE_PMEM_INFO *pmem_info, OMX_U32 size, void *vaddr,
+            buffer_id *buffer) = 0;
+#endif
+
     virtual status_t useGraphicBuffer(
             node_id node, OMX_U32 port_index,
             const sp<GraphicBuffer> &graphicBuffer, buffer_id *buffer) = 0;
@@ -142,6 +158,7 @@ public:
     enum InternalOptionType {
         INTERNAL_OPTION_SUSPEND,  // data is a bool
         INTERNAL_OPTION_REPEAT_PREVIOUS_FRAME_DELAY,  // data is an int64_t
+        INTERNAL_OPTION_MAX_TIMESTAMP_GAP, // data is int64_t
     };
     virtual status_t setInternalOption(
             node_id node,

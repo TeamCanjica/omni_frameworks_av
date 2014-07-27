@@ -881,17 +881,16 @@ status_t StagefrightRecorder::start() {
 }
 
 sp<MediaSource> StagefrightRecorder::createAudioSource() {
-#ifdef QCOM_HARDWARE
-    bool tunneledSource = false;
     int32_t res;
-    const char *tunnelMime;
-
     //check permissions
     res = mAppOpsManager.noteOp(AppOpsManager::OP_RECORD_AUDIO, mClientUid, mClientName);
     if (res != AppOpsManager::MODE_ALLOWED) {
         return NULL;
     }
 
+#ifdef QCOM_DIRECTTRACK
+    bool tunneledSource = false;
+    const char *tunnelMime;
     {
         AudioParameter param;
         String8 key("tunneled-input-formats");
@@ -1295,6 +1294,9 @@ void StagefrightRecorder::clipVideoFrameWidth() {
 
 status_t StagefrightRecorder::checkVideoEncoderCapabilities(
         bool *supportsCameraSourceMetaDataMode) {
+#ifdef USE_SUBMIT_ONE_INPUT_BUFFER
+    *supportsCameraSourceMetaDataMode = true;
+#else
     /* hardware codecs must support camera source meta data mode */
     Vector<CodecCapabilities> codecs;
     OMXClient client;
@@ -1306,6 +1308,7 @@ status_t StagefrightRecorder::checkVideoEncoderCapabilities(
              mVideoEncoder == VIDEO_ENCODER_H264 ? MEDIA_MIMETYPE_VIDEO_AVC : ""),
             false /* decoder */, true /* hwCodec */, &codecs);
     *supportsCameraSourceMetaDataMode = codecs.size() > 0;
+#endif
     ALOGV("encoder %s camera source meta-data mode",
             *supportsCameraSourceMetaDataMode ? "supports" : "DOES NOT SUPPORT");
 
